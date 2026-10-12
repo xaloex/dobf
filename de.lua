@@ -1,7 +1,6 @@
--- Delta iOS dumper: rezhim ozhidaniya (hook mode)
--- Shag 1: zapusti ETOt script v Delta — on povisit loadstring-huk i budet zhdat
--- Shag 2: zapusti vtoroy script (loadstring tot samiy luraph) — dumper ego perehvatit i soldampit
--- Dump lyazhet v workspace/lurp-dump/
+-- Delta iOS dumper: rezhim ozhidaniya (hook mode v2, readonly-safe)
+-- Shag 1: zapusti ETOt script — visit na hukah i zhdiot
+-- Shag : zapusti vtoroy script (loadstring luraph) — perehvat + dump v workspace/lurp-dump/
 
 local function log(...) print("[dumper]", ...) end
 log("huk stavlyu, zhdu loadstring...")
@@ -16,42 +15,51 @@ local function noteString(s)
     dumpedStrings[#dumpedStrings + 1] = s
 end
 
--- huki rasshifrovki (rabotayut poka zhdyom)
+-- hookfunction est v Delta? esli net — padayem s ponyatnoy oshibkoy
+if not hookfunction then
+    error("net hookfunction v etom executor — nuzhna Delta s hookfunction/newcclosure")
+end
+local wrap = newcclosure or function(f) return f end
+
+-- huki cherez hookfunction (readonly-tables bezopasno)
 local orig_tostring = buffer.tostring
 local orig_gsub = string.gsub
 local orig_sub = string.sub
 local orig_char = string.char
 local orig_format = string.format
 
-buffer.tostring = function(...)
+hookfunction(buffer.tostring, wrap(function(...)
     local r = orig_tostring(...)
     pcall(noteString, r)
     return r
-end
-string.gsub = function(s, pat, rep, ...)
+end))
+
+hookfunction(string.gsub, wrap(function(s, pat, rep, ...)
     local r = orig_gsub(s, pat, rep, ...)
     if type(r) == "string" and r ~= s then pcall(noteString, r) end
     return r
-end
-string.sub = function(s, i, j, ...)
+end))
+
+hookfunction(string.sub, wrap(function(s, i, j, ...)
     local r = orig_sub(s, i, j, ...)
     if type(r) == "string" and #r >= 2 then pcall(noteString, r) end
     return r
-end
-string.char = function(...)
+end))
+
+hookfunction(string.char, wrap(function(...)
     local r = orig_char(...)
     pcall(noteString, r)
     return r
-end
-string.format = function(fmt, ...)
+end))
+
+hookfunction(string.format, wrap(function(fmt, ...)
     local r = orig_format(fmt, ...)
     if type(r) == "string" and #r >= 2 then pcall(noteString, r) end
     return r
-end
+end))
 
 -- glavniy huk: perehvat loadstring
 local orig_loadstring = loadstring or load
-local orig_load = load
 local dumped = false
 
 local function saveDump(src, tag)
@@ -59,7 +67,6 @@ local function saveDump(src, tag)
     dumped = true
     log("PEREHVACHENO (" .. tag .. "), bayt: " .. #src)
 
-    -- progonyaem VM chtob huki sobrali rasshifrovannie stroki
     local chunk, loadErr = orig_loadstring(src, "luraph_vm")
     if chunk then
         local runOk, runErr = pcall(chunk)
@@ -69,16 +76,6 @@ local function saveDump(src, tag)
         pcall(noteString, src)
     end
 
-    -- vozvrat originalov
-    buffer.tostring = orig_tostring
-    string.gsub = orig_gsub
-    string.sub = orig_sub
-    string.char = orig_char
-    string.format = orig_format
-    if loadstring then loadstring = orig_loadstring end
-    if load then load = orig_load end
-
-    -- sborka
     table.sort(dumpedStrings, function(a, b) return #a > #b end)
     local out = {}
     out[#out + 1] = "-- DUMP (" .. tag .. ") | strings: " .. #dumpedStrings
@@ -120,7 +117,6 @@ end
 
 local function hooked(chunk, name, ...)
     if type(chunk) == "string" and #chunk > 1000 and not dumped then
-        -- eto pohozhe na nash luraph (bolshoy blob) — dampim
         local c = chunk
         saveDump(c, tostring(name or "loadstring"))
         return orig_loadstring(c, name, ...)
@@ -128,7 +124,9 @@ local function hooked(chunk, name, ...)
     return orig_loadstring(chunk, name, ...)
 end
 
-if loadstring then loadstring = hooked end
-if load then load = hooked end
+hookfunction(loadstring or load, wrap(hooked))
+if load and load ~= (loadstring or nil) then
+    hookfunction(load, wrap(hooked))
+end
 
 log("GOTOV. teper zapuskay vtoroy script (loadstring luraph) — ya ego perehvachu.")
