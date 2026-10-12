@@ -1,4 +1,4 @@
--- Delta iOS dumper dlya Luraph v15.1
+-- Delta iOS dumper dlyaw Luraph v15.1
 -- Na iOS net readfile/writefile ryadom, poetomu zagruzka idet po ssilke.
 -- Shag 1: zaley my_script.txt na gist/paste (raw link) i vstav ego nizhe v URL
 -- Shag 2: zapusti etot script v Delta iOS, dump uvidish v konsole + on sohranitsya esli est writefile
@@ -116,9 +116,12 @@ local final = table.concat(out, "\n")
 
 -- 9. probuem sohranit (na iOS chasto net writefile — togda ruchnoe kopirovanie)
 pcall(function()
+    if makefolder then pcall(makefolder, "workspace/lurp-dump") end
+    if makefolder then pcall(makefolder, "lurp-dump") end
+    local OUT_PATH = "workspace/lurp-dump/deobfuscated_dump.txt"
     if writefile then
-        writefile("deobfuscated_dump.txt", final)
-        log("GOTOVO. dump zapisan (" .. #final .. " bayt)")
+        writefile(OUT_PATH, final)
+        log("GOTOVO. dump zapisan v " .. OUT_PATH .. " (" .. #final .. " bayt)")
     else
         log("writefile net na iOS — kopiruy iz konsoli nizhe")
     end
