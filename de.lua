@@ -1,21 +1,19 @@
--- Delta iOS Luraph-killer v5: chokpoint-trap (pcall(loadstring, DECOMPRESSED))2222222222
+-- Delta iOS Luraph-killer v6: chokpoint-trap BEZ LIMITOV
 --
--- UYAZVIMOST (naydena statikoy v samom VM, etot samiy fayl 1.9MB):
---   C() loader sostoyanie y==0 delaet:
---     S = tostring(rasshifrovanniy_buffer)      -- decompress -> stroka
---     M,G = pcall(loadstring, S, "Luraph", nil) -- S = CHISTIY DEKOMPILIROVANNIY KOD
---   To est ves 1.8MB shifrobloba prevraschaetsya v ODIN vizov loadstring s otkritim tekstom.
---   Luraph ne mozhet bez etogo: emu nuzhen loadstring chtob prevratit baytkod v funkciyu.
---   Etot vizov NELZYA spryatat — on obyazan proyti cherez globalniy loadstring.
---   Poetomu: propuskaem vneshniy (1.9MB shifr), lovim VNUTRENNIY (chistiy kod), podmenyaem zaglushkoy.
+-- UYAZVIMOST: C() loader, sostoyanie y==0:
+--   S = tostring(rasshifrovanniy_buffer)
+--   M,G = pcall(loadstring, S, "Luraph", nil)   <-- S = CHISTIY KOD, obyazan proyti cherez globalniy loadstring
+-- Lovushka: vneshniy propuskaem, lovim VSE chto prihodit dalshe (kazhdiy chank >50 simvolov
+-- v svoy fayl, zhirnie rezhem na parti po 400KB). Nikakih skorov i filtrov.
 --
--- Shag 1: zapusti ETOt script — visit lovushka
--- Shag 2: zapusti vtoroy script (loadstring luraph) — on OTRABOTAET (ne blokiruetsya),
---         vnutrenniy loadstring perehvatitsya, chistiy kod upadyot v workspace/lurp-dump/inner_src.lua
---         realnoe ispolnenie podmenyaetsya zaglushkoy (igra ne visit, payload ne startuet)
+-- PORYADOK: 1) zapusti ETOt 2) gonay vtorie skolko ugodno 3) zaberi fayli iz workspace/lurp-dump/
+--
+-- PRO KRASH: esli vilet do pervogo POYMAL — eto iOS watchdog ubivaet igru na 1.8MB deshifre
+-- (odin potok, ~30-60s frosta). Lechenie: zakrit vse prilozheniya, ne trogat ekran poka visit,
+-- davat igre prozhevat. Posle POYMAL payload uzhe zablokirovan zaglushkoy — dalshe bezopasno.
 
 local function log(...) print("[killer]", ...) end
-log("stavlyu chokpoint-lovushku...")
+log("stavlyu chokpoint-lovushku BEZ LIMITOV...")
 
 if not hookfunction then error("net hookfunction — nuzhna Delta s hookfunction") end
 local wrap = newcclosure or function(f) return f end
@@ -33,36 +31,36 @@ local function save(name, data)
     else log("save FAIL " .. name .. ": " .. tostring(err)) end
 end
 
--- otsenka "chitabelnosti" BISTRO: tolko pervie 500 simvolov, odin prohod
-local function readability(s)
-    if type(s) ~= "string" or #s < 50 then return 0 end
-    local sample = s:sub(1, 500)
-    local kw = 0
-    for _ in sample:gmatch("%f[%a](local|function|end|if|then|else|return|for|while|do|nil|true|false)%f[^%a]") do
-        kw = kw + 1
-        if kw >= 6 then break end -- raniy vihod: i tak ponyatno
+-- zhirnie rezhem na parti po ~400KB (iOS writefile dushitsya na megabaytah)
+local PART = 400000
+local function saveSplit(base, data)
+    if #data <= PART then save(base, data) return end
+    local n = 0
+    for i = 1, #data, PART do
+        n = n + 1
+        save(base .. ".part" .. n, data:sub(i, i + PART - 1))
     end
-    return kw * 10
+    log("razbito na " .. n .. " chastey: " .. base .. ".partN")
 end
 
 local orig_loadstring = loadstring or load
-local stage = "WAIT_OUTER"  -- WAIT_OUTER -> WAIT_INNER (navsegda, lovim skolko ugodno)
-local outerSize = 0
+local stage = "WAIT_OUTER"
 local catchCount = 0
+local backupN = 0
 
--- backup-kanal: buffer.tostring vidit S pered loadstring (dvizhok buffer.* ne yuzaet — bezopasno)
-local backupSrc = nil
+-- backup-kanal: buffer.tostring vidit S pered loadstring. dvizhok buffer.* ne yuzaet.
+-- lovim VSE >5KB, kazhdiy v svoy fayl.
 if buffer and buffer.tostring then
     local o_ts = buffer.tostring
-    local n = 0
     pcall(hookfunction, buffer.tostring, wrap(function(...)
         local r = o_ts(...)
         if stage == "WAIT_INNER" and type(r) == "string" and #r > 5000 then
-            n = n + 1
-            if n <= 3 and readability(r) > 8 then
-                backupSrc = r
-                log("backup-kanal: buffer.tostring poymal chitabelniy kusok (" .. #r .. " bayt)")
-            end
+            backupN = backupN + 1
+            local bn = backupN
+            local rr = r
+            log("backup #" .. bn .. " (" .. #rr .. " bayt)")
+            if task and task.spawn then task.spawn(saveSplit, "backup_buf_" .. bn .. ".bin", rr)
+            else saveSplit("backup_buf_" .. bn .. ".bin", rr) end
         end
         return r
     end))
@@ -73,53 +71,40 @@ local function hooked(chunk, name, ...)
         return orig_loadstring(chunk, name, ...)
     end
 
-    if stage == "WAIT_OUTER" and #chunk > 500000 then
-        -- eto sam VM (1.9MB shifr): PROPUSKAEM, chtob doshel do chokpointa
-        stage = "WAIT_INNER"
-        outerSize = #chunk
-        log("vneshniy VM propuschen (" .. #chunk .. " bayt). zhdu vnutrennie loadstring (lovlyu VSE, bez limita)...")
-        -- sohranenie syrtca V FONE, chtob ne derzhat goryachiy put (1.9MB pishetsya dolgo)
-        if task and task.spawn then task.spawn(save, "raw_src.txt", chunk) else save("raw_src.txt", chunk) end
-        return orig_loadstring(chunk, name, ...)
-    end
-
-    -- noviy bolshoy vneshniy (drugoy luraph) posle pervogo: tozhe propustit, obnovit etalon
-    if stage == "WAIT_INNER" and #chunk > 500000 then
-        outerSize = #chunk
-        log("noviy vneshniy VM (" .. #chunk .. " bayt), propuskayu, prodolzhayu lovit...")
-        return orig_loadstring(chunk, name, ...)
-    end
-
-    if stage == "WAIT_INNER" and #chunk > 1000 then
-        local score = 0
-        pcall(function() score = readability(chunk) end)
-        log("kandidat: bayt=" .. #chunk .. " score=" .. string.format("%.1f", score) .. " name=" .. tostring(name))
-        if score > 8 or chunk:find("Luraph") or (#chunk < outerSize / 2 and #chunk > 5000) then
-            catchCount = catchCount + 1
-            local fname = "inner_src_" .. catchCount .. ".lua"
-            log("POYMAL #" .. catchCount .. " (" .. #chunk .. " bayt). sokhranyayu v " .. fname .. " + podmena zaglushkoy.")
-            -- sohranenie + print golovi V FONE: huk otdaet zaglushku SRAZU, bez ozhidaniya diska
-            local c = chunk
-            if task and task.spawn then
-                task.spawn(function()
-                    save(fname, c)
-                    print("----- INNER #" .. catchCount .. " HEAD (500) -----")
-                    print(c:sub(1, 500))
-                    print("----- END HEAD -----")
-                end)
-            else
-                save(fname, c)
-                print("----- INNER HEAD (500) -----")
-                print(c:sub(1, 500))
-                print("----- END HEAD -----")
-            end
-            -- VAZHNO: vozvraschaem zaglushku vmesto realnoy funkcii:
-            -- VM poluchit function (proverka r(g)==\"function\" proydet), no payload NE vipolnitsya
-            local stub = function(...) log("stub: realniy payload zablokirovan, tolko dump") return nil end
-            return stub
+    -- lyuboy zhirniy (>500KB): eto vneshniy VM-shifr. PROPUSKAEM vsegda (chtob doshel do chokpointa).
+    if #chunk > 500000 then
+        if stage == "WAIT_OUTER" then
+            stage = "WAIT_INNER"
+            log("vneshniy VM propuschen (" .. #chunk .. " bayt). lovlyu VSE dalshe, bez limita...")
+        else
+            log("esche odin vneshniy (" .. #chunk .. " bayt), propuskayu...")
         end
-        -- ne pohozh na vnutrenniy (sluzhebniy chank dvizhka) — propustit
+        local c = chunk
+        if task and task.spawn then task.spawn(saveSplit, "raw_src.txt", c)
+        else saveSplit("raw_src.txt", c) end
         return orig_loadstring(chunk, name, ...)
+    end
+
+    -- VSE ostalnoe >50 simvolov: lovim, pischem, podmenyaem zaglushkoy. BEZ SKOROV I FILTROV.
+    if stage == "WAIT_INNER" and #chunk > 50 then
+        catchCount = catchCount + 1
+        local cc = catchCount
+        local c = chunk
+        local cname = tostring(name or "?")
+        local fname = "inner_src_" .. cc .. ".lua"
+        log("POYMAL #" .. cc .. " (" .. #c .. " bayt, name=" .. cname .. ") -> " .. fname)
+        if task and task.spawn then
+            task.spawn(function()
+                saveSplit(fname, c)
+                print("----- INNER #" .. cc .. " HEAD (300) -----")
+                print(c:sub(1, 300))
+                print("----- END HEAD -----")
+            end)
+        else
+            saveSplit(fname, c)
+        end
+        local stub = function(...) return nil end
+        return stub
     end
 
     return orig_loadstring(chunk, name, ...)
@@ -130,5 +115,5 @@ if load and load ~= (loadstring or nil) then
     pcall(hookfunction, load, wrap(hooked))
 end
 
-log("GOTOV. poryadok: 1) etot script uzhe visit 2) gonay vtorie (luraph) skolko ugodno 3) zaberi " .. DUMP_DIR .. "/inner_src_N.lua")
-log("esli vnutrenniy ne prishel za 30s — smotri konsol, tam budet vidno vse vizovi loadstring.")
+log("GOTOV. gonay vtorie skolko ugodno, vse upadut v " .. DUMP_DIR .. "/inner_src_N.lua (+.partN esli zhirnie).")
+log("VAZHNO: posle zapuska vtorogo NE TROGAY EKRAN — deshifr 1.8MB morozit igru na ~30-60s, iOS ubivaet esli shevelit.")
